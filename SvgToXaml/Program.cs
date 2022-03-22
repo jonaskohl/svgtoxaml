@@ -1,4 +1,7 @@
 ﻿using System;
+using System.Diagnostics;
+using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Reflection;
 using System.Text.RegularExpressions;
@@ -10,7 +13,7 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("")]
 [assembly: AssemblyProduct("SvgToXaml")]
-[assembly: AssemblyCopyright("Copyright © Jonas Kohl 2022")]
+[assembly: AssemblyCopyright("Copyright © 2022 Jonas Kohl")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 [assembly: ComVisible(false)]
@@ -22,14 +25,21 @@ namespace SvgToXaml
 {
     class Program
     {
+        static readonly string[] commandSwitches = new string[] { "F", "M", "?", "H", "HELP" };
+        static readonly string[] flagSwitches = new string[] { "SILVERLIGHT" };
+        static readonly string[] knownSwitches = commandSwitches.Concat(flagSwitches).ToArray();
+        
         static int Main(string[] args)
         {
+            var version = Assembly.GetExecutingAssembly().GetName().Version.ToString();
+            var copyright = FileVersionInfo.GetVersionInfo(Assembly.GetExecutingAssembly().Location).LegalCopyright.Replace("\u00A9", "(C)");
+            
             var baseDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            var xslPath = Path.Combine(baseDir, "svg2xaml.xsl");
+            var xslPath = Path.Combine(baseDir, "svgtoxaml.xsl");
 
             if (!File.Exists(xslPath))
             {
-                Console.Error.WriteLine("Error: XSLT missing at " + xslPath);
+                Console.Error.WriteLine("Error: Missing XSL at " + xslPath);
                 return 1;
             }
 
@@ -38,32 +48,65 @@ namespace SvgToXaml
                 Console.Error.WriteLine("Error: Too few arguments");
                 return 2;
             }
+            
+            var switches = new List<string>();
+            
+            var paramIndex = 0;
+            for (var i = 0; i < args.Length; ++i)
+            {
+                var arg = args[i];
+                
+                if (arg.StartsWith("/") || arg.StartsWith("-"))
+                    switches.Add(arg.ToUpper().Substring(1));
+                else
+                {
+                    paramIndex = i;
+                    break;
+                }
+            }
+
+            if (switches.Count < 1)
+            {
+                Console.Error.WriteLine("Error: Too few arguments");
+                return 2;
+            }
+            
+            if (switches.Where(i => commandSwitches.Contains(i)).Count() > 1)
+            {
+                Console.Error.WriteLine("Error: Specified multiple commands");
+                return 7;
+            }
+            
+            if (switches.Any(i => !knownSwitches.Contains(i))) {
+                foreach (var sw in switches.Where(i => !knownSwitches.Contains(i)))
+                    Console.Error.WriteLine("Warning: Unknown command line switch: " + sw);
+            }
+
+            var command = switches.First(i => commandSwitches.Contains(i));
 
             var xargs = new XsltArgumentList();
-            xargs.AddParam("silverlight", "", true);
+            xargs.AddParam("silverlight", "", switches.Contains("SILVERLIGHT"));
 
             var xslt = new XslCompiledTransform();
             xslt.Load(xslPath);
+            
+            var pargs = args.Skip(paramIndex).ToArray();
 
-            var command = args[0];
-
-            command = Regex.Replace(command.ToUpper(), @"^[\/\-]", "/");
-
-            if (command == "/F")
+            if (command == "F")
             {
-                if (args.Length < 2)
+                if (pargs.Length < 1)
                 {
                     Console.Error.WriteLine("Error: Too few arguments");
                     return 2;
                 }
-                if (args.Length > 3)
+                if (pargs.Length > 2)
                 {
                     Console.Error.WriteLine("Error: Too many arguments");
                     return 3;
                 }
 
-                var inputFile = args[1];
-                var outputFile = args[2];
+                var inputFile = pargs[0];
+                var outputFile = pargs[1];
 
                 if (!File.Exists(inputFile) || !FileIsReadable(inputFile))
                 {
@@ -73,24 +116,24 @@ namespace SvgToXaml
 
                 Transform(xslt, xargs, inputFile, outputFile);
             }
-            else if (command == "/M")
+            else if (command == "M")
             {
-                if (args.Length < 3)
+                if (pargs.Length < 2)
                 {
                     Console.Error.WriteLine("Error: Too few arguments");
                     return 2;
                 }
-                if (args.Length > 4)
+                if (pargs.Length > 3)
                 {
                     Console.Error.WriteLine("Error: Too many arguments");
                     return 3;
                 }
 
-                var inputFilePath= args[1];
-                var inputFilePattern = args[2];
-                var outputDir = args[3];
+                var inputFilePath = pargs[0];
+                var inputFilePattern = pargs[1];
+                var outputDir = pargs[2];
 
-                if (!Directory.Exists(outputDir))
+                if (!Directory.Exists(inputFilePath))
                 {
                     Console.Error.WriteLine("Error: Input directory does not exist");
                     return 5;
@@ -106,18 +149,25 @@ namespace SvgToXaml
                     Directory.CreateDirectory(outputDir);
 
                 var files = Directory.GetFiles(inputFilePath, inputFilePattern);
-
-                foreach (var file in files)
-                {
-                    Console.WriteLine(file);
-                    Transform(xslt, xargs, file, Path.Combine(outputDir, Path.GetFileNameWithoutExtension(file) + ".xaml"));
-                }
+                
+                if (files.Length < 1)
+                    Console.Error.WriteLine("Warning: No input files found");
+                else
+                    foreach (var file in files)
+                    {
+                        Console.WriteLine(file);
+                        Transform(xslt, xargs, file, Path.Combine(outputDir, Path.GetFileNameWithoutExtension(file) + ".xaml"));
+                    }
             }
-            else if (command == "/?" || command == "/H" || command == "/HELP")
+            else if (command == "?" || command == "H" || command == "HELP")
             {
+                Console.WriteLine("SvgToXaml " + version);
+                Console.WriteLine(copyright);
+                Console.WriteLine();
                 Console.WriteLine("Usage:");
-                Console.WriteLine("svgtoxaml /F [Input file] [Output file]");
-                Console.WriteLine("svgtoxaml /M [Input folder] [Input pattern] [Output folder]");
+                Console.WriteLine("svgtoxaml /F [[/SILVERLIGHT]] [Input file] [Output file]");
+                Console.WriteLine("svgtoxaml /M [[/SILVERLIGHT]] [Input folder] [Input pattern] [Output folder]");
+                Console.WriteLine("svgtoxaml [/?|/H|/HELP]");
             }
             else
             {
